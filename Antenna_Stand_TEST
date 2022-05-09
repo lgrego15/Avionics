@@ -1,0 +1,218 @@
+//Lorenzo Gregori
+
+/////////THIS IS A ROUGH DRAFT OF AVIONICS ANTENNA STAND CONTROLLER/////////////////////////////
+//function:
+//in setup must know position of ground station relative to rocket
+                        //current setup: enter this manually
+                        //future setup: mount gps on the stand to do this automatically
+//read packet, calculate angle from stand to rocket, move motors to this angle
+
+//test progress
+                        //motor control works.
+                        //angle calculation function works (but only with example inputs)
+//future test
+                        //must test radio reciever function, and if angle calculation from real data is accurate
+
+#include <LoRa.h>
+#include <Tic.h>
+
+#define STEP_ANGLE 1.8
+#define STEPS_PER_REV 400
+
+// The GND, SCL, and SDA pins of the Arduino must each be
+// connected to the corresponding pins on each Tic.  You might
+// consider connecting the ERR lines of both Tics so that if
+// either one experiences an error, both of them will shut down
+// until you reset the Arduino.
+TicI2C tic1(14);
+TicI2C tic2(15);
+
+//input the lat and long dist of antenna stand from the rocket
+int32_t stand_dist_lat = 
+int32_t stand_dist_long = 
+
+//buffer for packet
+char buffer[11];
+
+
+//struct for packet
+typedef struct {
+  char header = 0x55;
+  int32_t lat;
+  char lat_dir;
+  int32_t lon;
+  char lon_dir;
+} Packet __attribute__((packed));
+
+int32_t lat_zero, long_zero, alt_zero;
+float theta, theta_prev, phi_phi_prev, theta_now, phi_now, theta_zero, phi_zero;
+unsigned long time_now, time_prev;
+
+void setup() {
+  //set up serial output
+  Serial.begin(9600);
+  while (!Serial);
+
+  Serial.println("LoRa Receiver");
+  //set up LoRa
+  if (!LoRa.begin(915E6)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+
+  ticSerial.begin(9600);
+
+  // Give the Tic some time to start up.
+  delay(20);
+
+  // Set the Tic's current position to 0, so that when we command
+  // it to move later, it will move a predictable amount.
+  //tic1 is elevation tic2 is azimuth.
+  tic1.energize();
+  tic1.haltAndSetPosition(0);
+  tic1.setStepMode(TicStepMode::Half);
+  tic1.exitSafeStart();
+  tic2.energize();
+  tic2.haltAndSetPosition(0);
+  tic2.setStepMode(TicStepMode::Half);
+  tic2.exitSafeStart();
+
+
+  ///calibrate the stand
+  delay(10000);
+  parse_packet();
+  lat_pad = packet_ptr->lat;
+  long_pad = packet_ptr->lon;
+  alt_pad = packet_ptr->___________________;stand_dist_lat
+
+  lat_zero = (lat_pad / 10000000.0) - stand_dist_lat;
+  long_zero = (long_pad / 10000000.0) - stand_dist_lon;
+  calc_angle(lat_pad, long_pad, alt_pad)
+  theta_zero = theta_now; //zero theta
+  theta_prev = theta_zero;
+  phi_zero = phi_now; //zero phi
+  phi_prev = phi_zero;
+  time_prev = millis();
+}
+
+void loop() {
+  //parse the radio packet
+  parse_packet();
+  int32_t lat_dat = (packet_ptr->lat) / 10000000.0;
+  int32_t long_dat = (packet_ptr->lon) / 10000000.0;
+  float alt_dat = packet_ptr->___________________;
+
+  //algorithm to get the pos
+  calc_angle(lat_dat, long_dat, alt_dat);
+  time_now = millis();
+
+  //now do predict calc
+  float ratePhi, rateTheta;
+  rateTheta = (theta_now - theta_prev) / (time_now - time_prev);
+  ratePhi = (phi_now - phi_prev) / (time_now - time_prev);
+
+  theta = theta_now + (rateTheta * PREDICTIONTIME) - theta_zero;
+  phi = phi_now + (ratePhi * PREDICTIONTIME) - phi_zero;
+
+  //control motors
+  /////have angle from ground stand to rocket (theta is azimuth --- phi is alt)
+  setElevationAndTime(phi,100);
+  setAzimuthAndTime(theta,100);
+}
+
+
+void parse_packet() {
+  // try to parse packet
+  int packetSize = LoRa.parsePacket();
+
+  //packet size is 11
+  if (packetSize == 11) {
+    // received a packet
+    Serial.println("Received packet ");
+
+    char first = (char)LoRa.read();
+    //the header is always 0x55
+    if (first == 0x55) {
+      buffer[0] = first;
+      int i = 1;
+      //read into buffer
+      while (i < 11) {
+        buffer[i] = (char)LoRa.read();
+        ++i;
+      }
+      //parse the buffer into packet
+      Packet * packet_ptr = (Packet *) buffer;
+      //output lat lon
+      Serial.print("lat: ");
+      Serial.println(packet_ptr->lat);
+      Serial.print("lat_dir: ");
+      Serial.println(packet_ptr->lat_dir);
+      Serial.print("lon: ");
+      Serial.println(packet_ptr->lon);
+      Serial.print("lon_dir: ");
+      Serial.println(packet_ptr->lon_dir);
+    }
+  }
+}
+
+void calc_angle(int32_t lat_dat, int32_t long_dat, int32_t alt_dat) {
+  int32_t deltaLAT = lat_dat - lat_zero;
+  int32_t deltaLON = long_dat = long_zero;
+  float deltaALT = alt_dat - alt_zero;
+
+  theta_now = atan(deltaLON / deltaLAT);
+  int32_t hyp = sqrt(pow(deltaLON, 2) + pow(deltaLAT, 2));
+  phi_now = atan(deltaALT / hyp);
+}
+
+void resetCommandTimeout()
+{
+  tic1.resetCommandTimeout();
+  tic2.resetCommandTimeout();
+}
+
+void delayWhileResettingCommandTimeout(uint32_t ms)
+{
+  uint32_t start = millis();
+  do
+  {
+    resetCommandTimeout();
+  } while ((uint32_t)(millis() - start) <= ms);
+}
+
+void waitForPosition1(int32_t targetPosition)
+{
+  do
+  {
+    resetCommandTimeout();
+  } while (tic1.getCurrentPosition() != targetPosition);
+}
+void waitForPosition2(int32_t targetPosition)
+{
+  do
+  {
+    resetCommandTimeout();
+  } while (tic2.getCurrentPosition() != targetPosition);
+}
+
+// position in degrees
+// We are using half steps
+void setElevationAndTime(double pos, uint32_t ms) {
+  int pulses = (int) ((pos) * STEPS_PER_REV / 360 + .5);
+  int pos0 = tic1.getCurrentPosition();
+  int dpos = (pulses > pos0) ? pulses - pos0 : pos0 - pulses;
+  int vel = 1000 * 10000 * dpos / ms;
+  tic1.setTargetVelocity(vel);
+  tic1.setTargetPosition(pulses);
+  waitForPosition(pulses);
+}
+
+void setAzimuthAndTime(double pos, uint32_t ms) {
+  int pulses = (int) ((pos) * STEPS_PER_REV / 360 + .5);
+  int pos0 = tic2.getCurrentPosition();
+  int dpos = (pulses > pos0) ? pulses - pos0 : pos0 - pulses;
+  int vel = 1000 * 10000 * dpos / ms;
+  tic2.setTargetVelocity(vel);
+  tic2.setTargetPosition(pulses);
+  waitForPosition(pulses);
+}
